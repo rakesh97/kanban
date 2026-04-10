@@ -173,6 +173,9 @@ def parse_body_sections(body: str) -> dict:
         else:
             header, content = part[:nl].strip(), part[nl:].strip()
 
+        # strip stray --- separators from section content
+        content = re.sub(r"\n---\s*$", "", content).strip()
+
         hl = header.lower()
         if hl == "description":
             sections["description"] = content
@@ -261,8 +264,6 @@ def ticket_to_markdown(ticket: Ticket) -> str:
         lines.append("")
 
     if ticket.comments:
-        lines.append("---")
-        lines.append("")
         lines.append(f"## Comments ({len(ticket.comments)})")
         lines.append("")
         for c in ticket.comments:
