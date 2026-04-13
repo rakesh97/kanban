@@ -1,4 +1,15 @@
-"""File I/O and storage for kanban tickets."""
+"""File I/O and storage for kanban tickets.
+
+All data lives under ~/.kanban/ with per-project subdirectories:
+
+    ~/.kanban/
+      config.yaml                  # global: active_project, etc.
+      projects/
+        <slug>/
+          config.yaml              # project_name, default_author, ...
+          PROJECT.md
+          epics/  tasks/  subtasks/  handoffs/  snapshots/
+"""
 
 import re
 from pathlib import Path
@@ -7,63 +18,186 @@ from typing import List, Optional, Dict, Any
 
 from .models import Ticket, Comment
 
-KANBAN_DIR = ".kanban"
+KANBAN_HOME = Path.home() / ".kanban"
 VALID_STATUSES = ("backlog", "in-progress", "done")
 VALID_TYPES = ("epic", "task", "subtask")
 VALID_PRIORITIES = ("low", "medium", "high", "critical")
 VALID_ASSIGNEE_TYPES = ("agent", "human", "")
 
+# Module-level override set by --project flag in CLI
+_active_project_override: Optional[str] = None
 
-# ── Locate .kanban directory ──────────────────────────────────────────
+
+def set_project_override(slug: str):
+    global _active_project_override
+    _active_project_override = slug
 
 
-def find_kanban_root() -> Optional[Path]:
-    """Walk up from cwd to find a .kanban directory."""
-    current = Path.cwd()
-    while True:
-        if (current / KANBAN_DIR).is_dir():
-            return current / KANBAN_DIR
-        if current == current.parent:
-            break
-        current = current.parent
-    return None
+# ── Global home ───────────────────────────────────────────────────────
+
+
+def get_kanban_home() -> Path:
+    """Return ~/.kanban, creating it if needed."""
+    if not KANBAN_HOME.exists():
+        KANBAN_HOME.mkdir(parents=True)
+        (KANBAN_HOME / "projects").mkdir()
+        (KANBAN_HOME / "config.yaml").write_text("active_project:\n")
+    return KANBAN_HOME
+
+
+def _ensure_home():
+    home = get_kanban_home()
+    if not (home / "projects").exists():
+        (home / "projects").mkdir()
+    if not (home / "config.yaml").exists():
+        (home / "config.yaml").write_text("active_project:\n")
+
+
+# ── Global config (active project) ───────────────────────────────────
+
+
+def load_global_config() -> dict:
+    home = get_kanban_home()
+    path = home / "config.yaml"
+    if not path.exists():
+        return {}
+    config: Dict[str, str] = {}
+    for line in path.read_text().strip().split("\n"):
+        if ":" in line:
+            key, value = line.split(":", 1)
+            config[key.strip()] = value.strip()
+    return config
+
+
+def save_global_config(config: dict):
+    home = get_kanban_home()
+    lines = [f"{k}: {v}" for k, v in config.items()]
+    (home / "config.yaml").write_text("\n".join(lines) + "\n")
+
+
+def get_active_project() -> str:
+    """Return the slug of the active project, or empty string."""
+    if _active_project_override:
+        return _active_project_override
+    cfg = load_global_config()
+    return cfg.get("active_project", "")
+
+
+def set_active_project(slug: str):
+    cfg = load_global_config()
+    cfg["active_project"] = slug
+    save_global_config(cfg)
+
+
+# ── Project management ────────────────────────────────────────────────
+
+
+def slugify(name: str) -> str:
+    """Convert a project name to a directory-safe slug."""
+    s = name.lower().strip()
+    s = re.sub(r"[^a-z0-9\s-]", "", s)
+    s = re.sub(r"[\s_]+", "-", s)
+    s = re.sub(r"-+", "-", s).strip("-")
+    return s or "project"
+
+
+def list_projects() -> List[dict]:
+    """Return list of {slug, name, path} for all projects."""
+    home = get_kanban_home()
+    projects_dir = home / "projects"
+    if not projects_dir.exists():
+        return []
+    result = []
+    for d in sorted(projects_dir.iterdir()):
+        if d.is_dir():
+            cfg = _load_project_config(d)
+            result.append({
+                "slug": d.name,
+                "name": cfg.get("project_name", d.name),
+                "path": d,
+            })
+    return result
+
+
+def _load_project_config(project_dir: Path) -> dict:
+    path = project_dir / "config.yaml"
+    if not path.exists():
+        return {}
+    config: Dict[str, str] = {}
+    for line in path.read_text().strip().split("\n"):
+        if ":" in line:
+            key, value = line.split(":", 1)
+            config[key.strip()] = value.strip()
+    return config
 
 
 def get_kanban_dir() -> Path:
-    root = find_kanban_root()
-    if root is None:
+    """Return the active project directory under ~/.kanban/projects/."""
+    slug = get_active_project()
+    if not slug:
         raise FileNotFoundError(
-            "No .kanban directory found. Run 'kb init' first."
+            "No active project. Run 'kb init <name>' to create one "
+            "or 'kb use <project>' to switch."
         )
-    return root
+    home = get_kanban_home()
+    project_dir = home / "projects" / slug
+    if not project_dir.exists():
+        raise FileNotFoundError(
+            f"Project '{slug}' not found. Run 'kb projects' to list available projects."
+        )
+    return project_dir
 
 
 # ── Project initialisation ────────────────────────────────────────────
 
 
-def init_project(name: str = "My Project") -> Path:
-    kanban = Path.cwd() / KANBAN_DIR
-    if kanban.exists():
-        raise FileExistsError(f"{KANBAN_DIR} already exists in {Path.cwd()}")
+def init_project(name: str, slug: str = None) -> Path:
+    """Create a new project under ~/.kanban/projects/<slug>/."""
+    _ensure_home()
+    if not slug:
+        slug = slugify(name)
+    home = get_kanban_home()
+    project_dir = home / "projects" / slug
+    if project_dir.exists():
+        raise FileExistsError(
+            f"Project '{slug}' already exists at {project_dir}"
+        )
 
-    kanban.mkdir()
+    project_dir.mkdir(parents=True)
     for sub in ("epics", "tasks", "subtasks", "handoffs", "snapshots"):
-        (kanban / sub).mkdir()
+        (project_dir / sub).mkdir()
 
-    # config
-    (kanban / "config.yaml").write_text(
-        f"project_name: {name}\ndefault_author: \ndefault_author_type: human\n"
+    (project_dir / "config.yaml").write_text(
+        f"project_name: {name}\ndefault_author:\ndefault_author_type: human\n"
     )
-
-    # PROJECT.md
-    (kanban / "PROJECT.md").write_text(
+    (project_dir / "PROJECT.md").write_text(
         f"# {name}\n\n"
         "## Overview\n\n_Describe your project here._\n\n"
         "## Architecture\n\n_Key architectural decisions._\n\n"
         "## Conventions\n\n_Coding conventions and standards._\n"
     )
 
-    return kanban
+    # set as active project
+    set_active_project(slug)
+
+    return project_dir
+
+
+def delete_project(slug: str) -> Path:
+    """Delete a project directory. Returns the path that was deleted."""
+    import shutil
+
+    home = get_kanban_home()
+    project_dir = home / "projects" / slug
+    if not project_dir.exists():
+        raise FileNotFoundError(f"Project '{slug}' not found.")
+    shutil.rmtree(project_dir)
+
+    # clear active if it was this project
+    if get_active_project() == slug:
+        set_active_project("")
+
+    return project_dir
 
 
 # ── Frontmatter parsing ──────────────────────────────────────────────
@@ -149,7 +283,6 @@ def parse_body_sections(body: str) -> dict:
     if not body:
         return sections
 
-    # strip leading title line
     lines = body.split("\n")
     start = 0
     for i, line in enumerate(lines):
@@ -158,8 +291,6 @@ def parse_body_sections(body: str) -> dict:
             break
 
     body_after_title = "\n".join(lines[start:]).strip()
-
-    # split by ## headers
     parts = re.split(r"^## ", body_after_title, flags=re.MULTILINE)
 
     for part in parts:
@@ -218,7 +349,7 @@ def _parse_comments(text: str) -> List[Comment]:
     return comments
 
 
-# ── Ticket ↔ markdown ─────────────────────────────────────────────────
+# ── Ticket <-> markdown ──────────────────────────────────────────────
 
 
 def ticket_to_markdown(ticket: Ticket) -> str:
@@ -383,18 +514,15 @@ def load_all_tickets(
 
 
 def _next_seq(directory: Path, prefix: str, separator: str) -> int:
-    """Return the next sequence number for files matching prefix+separator+NNN."""
     pattern = f"{prefix}{separator}*.md"
     existing = sorted(directory.glob(pattern))
     if not existing:
         return 1
     last_stem = existing[-1].stem
-    # extract the last numeric segment
     idx = last_stem.rfind(separator)
     if idx == -1:
         return 1
     tail = last_stem[idx + len(separator):]
-    # take only the leading digits portion (before any further separator)
     match = re.match(r"(\d+)", tail)
     if match:
         return int(match.group(1)) + 1
@@ -419,7 +547,7 @@ def next_subtask_id(task_id: str) -> str:
     return f"{task_id}-S-{seq:03d}"
 
 
-# ── Config helpers ────────────────────────────────────────────────────
+# ── Project config ────────────────────────────────────────────────────
 
 
 def load_config() -> dict:

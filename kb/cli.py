@@ -16,17 +16,62 @@ from .context import generate_context, generate_handoff_doc, generate_snapshot
 
 
 def cmd_init(args):
-    name = args.name or "My Project"
+    name = args.name
+    slug = args.id or None
     try:
-        path = store.init_project(name)
-        print(f"Initialized kanban project '{name}' at {path}")
+        path = store.init_project(name, slug)
+        actual_slug = path.name
+        print(f"Created project '{name}' ({actual_slug})")
+        print(f"  Location: {path}")
+        print(f"  Active project set to: {actual_slug}")
         print()
         print("Next steps:")
-        print(f"  1. Edit {path}/PROJECT.md to describe your project")
-        print("  2. Run 'kb create epic \"Epic title\"' to create your first epic")
+        print(f"  kb create epic \"Epic title\"")
     except FileExistsError as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
+
+
+def cmd_projects(args):
+    projects = store.list_projects()
+    active = store.get_active_project()
+
+    if not projects:
+        print("No projects. Run 'kb init <name>' to create one.")
+        return
+
+    print(f"{'  '} {'Slug':<24} Name")
+    print("-" * 60)
+    for p in projects:
+        marker = "->" if p["slug"] == active else "  "
+        print(f"{marker} {p['slug']:<24} {p['name']}")
+    print(f"\n{len(projects)} project(s)")
+
+
+def cmd_use(args):
+    slug = args.project
+    # verify it exists
+    home = store.get_kanban_home()
+    if not (home / "projects" / slug).exists():
+        # try fuzzy match
+        projects = store.list_projects()
+        matches = [p for p in projects if slug in p["slug"] or slug in p["name"].lower()]
+        if len(matches) == 1:
+            slug = matches[0]["slug"]
+        else:
+            print(f"Error: Project '{slug}' not found.", file=sys.stderr)
+            if matches:
+                print("Did you mean:", file=sys.stderr)
+                for m in matches:
+                    print(f"  {m['slug']} ({m['name']})", file=sys.stderr)
+            else:
+                print("Run 'kb projects' to see available projects.", file=sys.stderr)
+            sys.exit(1)
+
+    store.set_active_project(slug)
+    cfg = store.load_config()
+    name = cfg.get("project_name", slug)
+    print(f"Switched to project: {name} ({slug})")
 
 
 def cmd_create(args):
@@ -45,7 +90,6 @@ def cmd_create(args):
                     file=sys.stderr,
                 )
                 sys.exit(1)
-            # validate parent exists
             store.load_ticket(args.epic)
             ticket_id = store.next_task_id(args.epic)
             parent = args.epic
@@ -99,7 +143,6 @@ def cmd_create(args):
 
         path = store.save_ticket(ticket)
         print(f"Created {ticket_type} {ticket_id}: {title}")
-        print(f"  File: {path}")
 
     except FileNotFoundError as e:
         print(f"Error: {e}", file=sys.stderr)
@@ -318,7 +361,6 @@ def cmd_edit(args):
             updated = True
 
         if not updated:
-            # open in $EDITOR
             editor = os.environ.get(
                 "EDITOR", os.environ.get("VISUAL", "vi")
             )
@@ -478,7 +520,7 @@ def cmd_delete(args):
             if answer.lower() != "y":
                 print("Cancelled.")
                 return
-        path = store.delete_ticket(args.id)
+        store.delete_ticket(args.id)
         print(f"Deleted {args.id}: {ticket.title}")
     except FileNotFoundError as e:
         print(f"Error: {e}", file=sys.stderr)
@@ -558,7 +600,6 @@ def cmd_import(args):
             store.save_ticket(sub)
             imported.append(sub)
 
-        # accept a single object or a list
         items = data if isinstance(data, list) else [data]
         for item in items:
             t = item.get("type", "epic")
@@ -569,7 +610,7 @@ def cmd_import(args):
             elif t == "subtask" and "task" in item:
                 _import_subtask(item, item["task"])
             else:
-                _import_epic(item)  # default to epic wrapper
+                _import_epic(item)
 
         print(f"Imported {len(imported)} ticket(s):")
         for t in imported:
@@ -589,17 +630,32 @@ def cmd_import(args):
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="kb",
-        description="Git-based project management for AI agents and humans",
+        description="Global project management for AI agents and humans",
     )
     parser.add_argument(
         "--version", action="version", version="%(prog)s 0.1.0"
     )
+    parser.add_argument(
+        "--project", "-P",
+        help="Override active project (use project slug)",
+        metavar="SLUG",
+    )
     sub = parser.add_subparsers(dest="command", help="Available commands")
 
     # ── init
-    p = sub.add_parser("init", help="Initialize a new kanban project")
-    p.add_argument("--name", "-n", help="Project name")
+    p = sub.add_parser("init", help="Create a new project")
+    p.add_argument("name", help="Project name")
+    p.add_argument("--id", help="Custom slug (default: derived from name)")
     p.set_defaults(func=cmd_init)
+
+    # ── projects
+    p = sub.add_parser("projects", help="List all projects")
+    p.set_defaults(func=cmd_projects)
+
+    # ── use
+    p = sub.add_parser("use", help="Switch active project")
+    p.add_argument("project", help="Project slug")
+    p.set_defaults(func=cmd_use)
 
     # ── create
     p = sub.add_parser("create", help="Create a new ticket")
@@ -745,6 +801,10 @@ def build_parser() -> argparse.ArgumentParser:
 def main():
     parser = build_parser()
     args = parser.parse_args()
+
+    # apply --project override before any command runs
+    if hasattr(args, "project") and args.project and args.command not in ("init", "projects", "use"):
+        store.set_project_override(args.project)
 
     if not args.command:
         parser.print_help()
