@@ -624,6 +624,15 @@ def cmd_import(args):
         sys.exit(1)
 
 
+def cmd_tui(args):
+    from .tui import KanbanApp
+    project = None
+    if hasattr(args, "project") and args.project:
+        project = args.project
+    app = KanbanApp(project_slug=project)
+    app.run()
+
+
 # ── Argument parser ───────────────────────────────────────────────────
 
 
@@ -794,6 +803,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--file", "-f", help="JSON file path")
     p.add_argument("--json", dest="json_str", help="JSON string")
     p.set_defaults(func=cmd_import)
+
+    # ── tui
+    p = sub.add_parser("tui", help="Launch interactive terminal UI")
+    p.set_defaults(func=cmd_tui)
 
     return parser
 

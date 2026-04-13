@@ -7,9 +7,11 @@ name = "kanban"
 version = "0.1.0"
 description = "Git-based project management for AI agents and humans"
 requires-python = ">=3.8"
+dependencies = ["textual>=1.0"]
 
 [project.scripts]
 kb = "kb.cli:main"
+kbtui = "kb.tui:main"
 
 [tool.setuptools.packages.find]
 include = ["kb*"]
