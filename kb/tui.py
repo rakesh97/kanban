@@ -62,6 +62,72 @@ def _assignee_badge(ticket: Ticket) -> str:
     return f"[magenta]{ticket.assignee}[/] [dim](human)[/]"
 
 
+# ── Hierarchy helpers ─────────────────────────────────────────────────
+
+
+def _build_hierarchy(tickets: list[Ticket]) -> list[dict]:
+    """Organise tickets into a tree: epics → tasks → subtasks.
+
+    Returns a list of dicts:
+      {"epic": Ticket|None, "tasks": [{"task": Ticket, "subtasks": [Ticket]}]}
+
+    Tickets with no parent epic are grouped under a synthetic ``None`` epic.
+    """
+    epics: dict[str, Ticket] = {}
+    tasks_by_epic: dict[str, list[Ticket]] = {}
+    subtasks_by_task: dict[str, list[Ticket]] = {}
+    orphan_tickets: list[Ticket] = []
+
+    for t in tickets:
+        if t.type == "epic":
+            epics[t.id] = t
+            tasks_by_epic.setdefault(t.id, [])
+        elif t.type == "task":
+            if t.parent:
+                tasks_by_epic.setdefault(t.parent, []).append(t)
+            else:
+                orphan_tickets.append(t)
+        elif t.type == "subtask":
+            if t.parent:
+                subtasks_by_task.setdefault(t.parent, []).append(t)
+            else:
+                orphan_tickets.append(t)
+
+    result = []
+
+    # known epics with their children
+    for eid in sorted(epics):
+        epic = epics[eid]
+        task_nodes = []
+        for task in tasks_by_epic.get(eid, []):
+            task_nodes.append({
+                "task": task,
+                "subtasks": subtasks_by_task.get(task.id, []),
+            })
+        result.append({"epic": epic, "tasks": task_nodes})
+
+    # tasks whose epic isn't in the current ticket set (e.g. filtered out)
+    seen_tasks = {t["task"].id for grp in result for t in grp["tasks"]}
+    for eid, tlist in tasks_by_epic.items():
+        if eid not in epics:
+            task_nodes = []
+            for task in tlist:
+                if task.id not in seen_tasks:
+                    task_nodes.append({
+                        "task": task,
+                        "subtasks": subtasks_by_task.get(task.id, []),
+                    })
+            if task_nodes:
+                result.append({"epic": None, "tasks": task_nodes})
+
+    # true orphans
+    if orphan_tickets:
+        task_nodes = [{"task": t, "subtasks": []} for t in orphan_tickets]
+        result.append({"epic": None, "tasks": task_nodes})
+
+    return result
+
+
 # ── Ticket detail markdown ────────────────────────────────────────────
 
 
@@ -433,39 +499,133 @@ class KanbanApp(App):
 
     def _load_board(self) -> None:
         tickets = self._load_tickets()
-        buckets = {"backlog": [], "in-progress": [], "done": []}
+        hierarchy = _build_hierarchy(tickets)
+
+        # bucket all tickets by status for counting
+        all_by_status: dict[str, int] = {"backlog": 0, "in-progress": 0, "done": 0}
         for t in tickets:
-            if t.status in buckets:
-                buckets[t.status].append(t)
+            if t.status in all_by_status:
+                all_by_status[t.status] += 1
 
         for col_id, status in [("col-backlog", "backlog"), ("col-progress", "in-progress"), ("col-done", "done")]:
             opts = self.query_one(f"#opts-{col_id}", OptionList)
             opts.clear_options()
-            count = len(buckets[status])
+
             header_widget = self.query_one(f"#{col_id} .column-header", Static)
             label = {"backlog": "BACKLOG", "in-progress": "IN PROGRESS", "done": "DONE"}[status]
-            header_widget.update(f"{label} ({count})")
+            header_widget.update(f"{label} ({all_by_status[status]})")
 
-            for t in buckets[status]:
-                assignee = _assignee_badge(t)
-                card = f"[bold]{t.id}[/]\n{t.title}\n{assignee} [{PRIORITY_COLORS.get(t.priority, 'white')}]{t.priority}[/]"
-                if t.labels:
-                    card += f"\n[dim]{' '.join('#' + l for l in t.labels)}[/]"
-                opts.add_option(Option(card, id=t.id))
+            for group in hierarchy:
+                epic = group["epic"]
+                child_tasks = group["tasks"]
+
+                # collect items in this status column for this group
+                epic_in_col = epic and epic.status == status
+                tasks_in_col = []
+                for tn in child_tasks:
+                    if tn["task"].status == status:
+                        subs = [s for s in tn["subtasks"] if s.status == status]
+                        tasks_in_col.append((tn["task"], subs))
+                    else:
+                        # subtasks might be in this column even if parent task isn't
+                        subs = [s for s in tn["subtasks"] if s.status == status]
+                        if subs:
+                            tasks_in_col.append((None, subs))
+
+                if not epic_in_col and not tasks_in_col:
+                    continue
+
+                # render epic header
+                if epic:
+                    if epic_in_col:
+                        epic_card = (
+                            f"[bold white on rgb(40,60,120)] EPIC [/] "
+                            f"[bold]{epic.id}[/]\n"
+                            f"[bold]{epic.title}[/]\n"
+                            f"{_assignee_badge(epic)} "
+                            f"[{PRIORITY_COLORS.get(epic.priority, 'white')}]{epic.priority}[/]"
+                        )
+                        if epic.labels:
+                            epic_card += f"\n[dim]{' '.join('#' + l for l in epic.labels)}[/]"
+                        opts.add_option(Option(epic_card, id=epic.id))
+                    else:
+                        # epic is in another column, show a dim reference header
+                        opts.add_option(Option(
+                            f"[dim bold]── {epic.id}: {epic.title} ──[/]",
+                            id=epic.id,
+                        ))
+
+                # render tasks under this epic
+                for task, subs in tasks_in_col:
+                    if task:
+                        assignee = _assignee_badge(task)
+                        card = (
+                            f"  [bold]{task.id}[/]\n"
+                            f"  {task.title}\n"
+                            f"  {assignee} "
+                            f"[{PRIORITY_COLORS.get(task.priority, 'white')}]{task.priority}[/]"
+                        )
+                        if task.labels:
+                            card += f"\n  [dim]{' '.join('#' + l for l in task.labels)}[/]"
+                        opts.add_option(Option(card, id=task.id))
+
+                    for sub in subs:
+                        sub_card = (
+                            f"    [dim]{sub.id}[/]\n"
+                            f"    [dim]{sub.title}[/]\n"
+                            f"    {_assignee_badge(sub)} "
+                            f"[dim][{PRIORITY_COLORS.get(sub.priority, 'white')}]{sub.priority}[/][/]"
+                        )
+                        opts.add_option(Option(sub_card, id=sub.id))
 
         self._update_status("Board view loaded")
 
     def _load_list(self) -> None:
         tickets = self._load_tickets()
+        hierarchy = _build_hierarchy(tickets)
         table = self.query_one("#ticket-table", DataTable)
         table.clear()
-        for t in tickets:
-            assignee = ""
-            if t.assignee:
-                assignee = f"{t.assignee} ({t.assignee_type})" if t.assignee_type else t.assignee
-            title = t.title if len(t.title) <= 45 else t.title[:42] + "..."
-            table.add_row(t.id, t.type, t.status, t.priority, assignee, title, key=t.id)
-        self._update_status(f"{len(tickets)} ticket(s)")
+        count = 0
+
+        for group in hierarchy:
+            epic = group["epic"]
+
+            if epic:
+                title = epic.title if len(epic.title) <= 43 else epic.title[:40] + "..."
+                assignee = ""
+                if epic.assignee:
+                    assignee = f"{epic.assignee} ({epic.assignee_type})" if epic.assignee_type else epic.assignee
+                table.add_row(
+                    epic.id, "EPIC", epic.status, epic.priority,
+                    assignee, f">> {title}", key=epic.id,
+                )
+                count += 1
+
+            for tn in group["tasks"]:
+                task = tn["task"]
+                title = task.title if len(task.title) <= 41 else task.title[:38] + "..."
+                assignee = ""
+                if task.assignee:
+                    assignee = f"{task.assignee} ({task.assignee_type})" if task.assignee_type else task.assignee
+                prefix = "├─ " if epic else ""
+                table.add_row(
+                    task.id, "task", task.status, task.priority,
+                    assignee, f"{prefix}{title}", key=task.id,
+                )
+                count += 1
+
+                for sub in tn["subtasks"]:
+                    stitle = sub.title if len(sub.title) <= 39 else sub.title[:36] + "..."
+                    sassignee = ""
+                    if sub.assignee:
+                        sassignee = f"{sub.assignee} ({sub.assignee_type})" if sub.assignee_type else sub.assignee
+                    table.add_row(
+                        sub.id, "subtask", sub.status, sub.priority,
+                        sassignee, f"│  ├─ {stitle}", key=sub.id,
+                    )
+                    count += 1
+
+        self._update_status(f"{count} ticket(s)")
 
     def _show_detail(self, ticket_id: str) -> None:
         self._selected_ticket_id = ticket_id
