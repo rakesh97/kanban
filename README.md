@@ -1,6 +1,6 @@
-# kb — Git-Based Project Management for AI Agents and Humans
+# kb — Project Management for AI Agents and Humans
 
-`kb` is a CLI tool that manages project tickets as markdown files inside a `.kanban/` directory in any git repo. No database, no web UI, no accounts. Tickets are plain markdown with YAML frontmatter — readable and editable by both agents and humans.
+`kb` is a global CLI tool that manages project tickets as markdown files in `~/.kanban/`. No database, no web UI, no accounts, no repo pollution. Works from any directory. Agents and humans use the same CLI.
 
 ## Why This Exists
 
@@ -10,7 +10,7 @@ When AI agents work on large projects, they need:
 - A way to hand off knowledge between agents without re-reading the entire repo
 - Collaboration with humans through comments and reviews
 
-`kb` provides all of this through files and a CLI that any agent can call.
+`kb` provides all of this through a global CLI that any agent can call from anywhere.
 
 ---
 
@@ -24,11 +24,58 @@ pipx install -e /path/to/kanban
 
 ---
 
+## Storage
+
+All data lives in `~/.kanban/`, not inside your repos:
+
+```
+~/.kanban/
+  config.yaml                      # active_project setting
+  projects/
+    my-project/
+      config.yaml                  # project_name, default_author
+      PROJECT.md                   # project-level context
+      epics/   tasks/   subtasks/  # ticket markdown files
+      handoffs/                    # agent handoff notes
+      snapshots/                   # point-in-time status snapshots
+    another-project/
+      ...
+```
+
+Nothing touches your git repos. No `.kanban/` directory, no `.gitignore` changes, no coworker questions.
+
+---
+
+## Projects
+
+`kb` supports multiple projects. One is active at a time.
+
+```bash
+# create a project (auto-sets it as active)
+kb init "My Project"
+
+# create another
+kb init "Work Auth System"
+
+# list all projects (arrow shows active)
+kb projects
+
+# switch active project
+kb use my-project
+
+# run any command against a specific project without switching
+kb -P work-auth-system board
+```
+
+The `-P <slug>` flag works on any command, so agents can target a specific project explicitly.
+
+---
+
 ## Ticket Structure
 
 ```
-Epic (E-001)              # A large body of work
-  +-- Task (E-001-T-001)        # A concrete unit of work
+Epic (E-001)                       # A large body of work
+  +-- Task (E-001-T-001)           # A concrete unit of work
         +-- Subtask (E-001-T-001-S-001)  # A smaller piece of a task
 ```
 
@@ -51,7 +98,7 @@ kb context E-001-T-003
 ```
 
 This outputs a single document containing:
-- Project summary (from `.kanban/PROJECT.md`)
+- Project summary (from PROJECT.md)
 - Epic scope and key decisions
 - Your task description, acceptance criteria, and all comments
 - Handoff notes from completed dependency tasks
@@ -111,13 +158,15 @@ kb move E-001-T-003 done
 
 ## Complete Command Reference
 
-### Initialize a project
+### Project management
 
 ```bash
-kb init --name "Project Name"
+kb init "Project Name"              # create project, set as active
+kb init "Name" --id custom-slug     # create with custom slug
+kb projects                         # list all projects
+kb use <slug>                       # switch active project
+kb -P <slug> <command>              # run command against specific project
 ```
-
-Creates `.kanban/` with config, PROJECT.md, and empty directories for epics/tasks/subtasks/handoffs/snapshots.
 
 ### Create tickets
 
@@ -227,7 +276,7 @@ kb comment E-001-T-003 "Comment text here" --author claude --author-type agent
 kb comment E-001-T-003 "Human feedback" --author rakesh --author-type human
 ```
 
-If `--author` is omitted, uses `default_author` from `.kanban/config.yaml`.
+If `--author` is omitted, uses `default_author` from the project's config.yaml.
 
 ### Assign / unassign
 
@@ -259,7 +308,7 @@ kb handoff E-001-T-003 --message-file handoff.md
 kb handoff E-001-T-003 -m "Summary" -v   # also prints the handoff
 ```
 
-Handoffs are saved to `.kanban/handoffs/E-001-T-003.handoff.md` and automatically included when future agents run `kb context` on dependent tickets.
+Handoffs are saved and automatically included when future agents run `kb context` on dependent tickets.
 
 ### Project snapshot
 
@@ -272,8 +321,6 @@ Outputs:
 - Per-epic progress breakdown
 - Unassigned work
 - Blocked tickets (dependencies not met)
-
-Also saves to `.kanban/snapshots/`.
 
 ### Delete a ticket
 
@@ -378,16 +425,17 @@ Guidelines for creating good tickets:
 
 ## File Format Reference
 
-Tickets are stored as markdown files in `.kanban/`. Agents can read and edit these files directly if needed, but the CLI is preferred.
+Agents can read and edit ticket files directly if needed, but the CLI is preferred.
 
 **Location mapping:**
-- Epics: `.kanban/epics/E-001.md`
-- Tasks: `.kanban/tasks/E-001-T-001.md`
-- Subtasks: `.kanban/subtasks/E-001-T-001-S-001.md`
-- Handoffs: `.kanban/handoffs/E-001-T-001.handoff.md`
-- Snapshots: `.kanban/snapshots/YYYY-MM-DD-HHMMSS.md`
-- Project context: `.kanban/PROJECT.md`
-- Config: `.kanban/config.yaml`
+- Epics: `~/.kanban/projects/<slug>/epics/E-001.md`
+- Tasks: `~/.kanban/projects/<slug>/tasks/E-001-T-001.md`
+- Subtasks: `~/.kanban/projects/<slug>/subtasks/E-001-T-001-S-001.md`
+- Handoffs: `~/.kanban/projects/<slug>/handoffs/E-001-T-001.handoff.md`
+- Snapshots: `~/.kanban/projects/<slug>/snapshots/YYYY-MM-DD-HHMMSS.md`
+- Project context: `~/.kanban/projects/<slug>/PROJECT.md`
+- Project config: `~/.kanban/projects/<slug>/config.yaml`
+- Global config: `~/.kanban/config.yaml`
 
 **Ticket file structure:**
 
@@ -459,8 +507,12 @@ Make sure to add rate limiting on the login endpoint.
 
 ## Config
 
-`.kanban/config.yaml` contains:
+**Global config** (`~/.kanban/config.yaml`):
+```yaml
+active_project: my-project
+```
 
+**Project config** (`~/.kanban/projects/<slug>/config.yaml`):
 ```yaml
 project_name: My Project
 default_author: rakesh
@@ -478,7 +530,8 @@ Add this to any project's `CLAUDE.md` so agents automatically follow the protoco
 ```markdown
 ## Task Management
 
-This project uses `kb` for task tracking. Tickets are in `.kanban/`.
+This project uses `kb` for task tracking. Data is in ~/.kanban/ (not in this repo).
+Active project: <slug>
 
 When assigned a ticket:
 1. Run `kb context <ticket-id>` and read the full output before starting
@@ -516,3 +569,5 @@ When you have access to Atlassian MCP tools, use this workflow:
 **Comments**: Use comments for async collaboration. Humans will comment with feedback, questions, or approvals. Check the comments in your context briefing and respond to any open questions.
 
 **Decisions log** (epics only): When a significant decision is made during an epic, update it with `kb edit E-001 --decisions "- Decision 1\n- Decision 2"`. This ensures all agents working on the epic share the same understanding.
+
+**Project targeting**: Use `kb -P <slug>` to run any command against a specific project without switching. Useful when agents work across multiple projects.
