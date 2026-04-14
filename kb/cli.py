@@ -12,6 +12,11 @@ from .board import render_board
 from .context import generate_context, generate_handoff_doc, generate_snapshot
 
 
+def _expand_newlines(text: str) -> str:
+    """Convert literal \\n sequences in CLI args to real newlines."""
+    return text.replace("\\n", "\n") if text else text
+
+
 # ── Commands ──────────────────────────────────────────────────────────
 
 
@@ -118,7 +123,7 @@ def cmd_create(args):
             else []
         )
 
-        description = args.description or ""
+        description = _expand_newlines(args.description or "")
         if args.description_file:
             with open(args.description_file) as f:
                 description = f.read()
@@ -138,7 +143,7 @@ def cmd_create(args):
             source=args.source or "",
             created=now,
             updated=now,
-            acceptance_criteria=args.acceptance_criteria or "",
+            acceptance_criteria=_expand_newlines(args.acceptance_criteria or ""),
         )
 
         path = store.save_ticket(ticket)
@@ -288,7 +293,7 @@ def cmd_edit(args):
             ticket.title = args.title
             updated = True
         if args.description is not None:
-            ticket.description = args.description
+            ticket.description = _expand_newlines(args.description)
             updated = True
         if args.description_file:
             with open(args.description_file) as f:
@@ -327,7 +332,7 @@ def cmd_edit(args):
                     ticket.labels.remove(label)
             updated = True
         if args.acceptance_criteria is not None:
-            ticket.acceptance_criteria = args.acceptance_criteria
+            ticket.acceptance_criteria = _expand_newlines(args.acceptance_criteria)
             updated = True
         if args.add_depends:
             for dep in args.add_depends.split(","):
@@ -357,7 +362,7 @@ def cmd_edit(args):
             ticket.source = args.source
             updated = True
         if args.decisions is not None:
-            ticket.decisions = args.decisions
+            ticket.decisions = _expand_newlines(args.decisions)
             updated = True
 
         if not updated:
