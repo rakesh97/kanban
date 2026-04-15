@@ -1,6 +1,24 @@
 # kb — Project Management for AI Agents and Humans
 
+[![PyPI version](https://img.shields.io/pypi/v/kb-kanban.svg)](https://pypi.org/project/kb-kanban/)
+[![Python](https://img.shields.io/pypi/pyversions/kb-kanban.svg)](https://pypi.org/project/kb-kanban/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/rakesh97/kanban/blob/main/LICENSE)
+
 `kb` is a global CLI tool that manages project tickets as markdown files in `~/.kanban/`. No database, no web UI, no accounts, no repo pollution. Works from any directory. Agents and humans use the same CLI.
+
+### Install
+
+```bash
+pip install kb-kanban
+```
+
+Or with [pipx](https://pipx.pypa.io/) (recommended — installs globally without venv):
+
+```bash
+pipx install kb-kanban
+```
+
+This gives you two commands: `kb` (CLI) and `kbtui` (interactive terminal UI).
 
 ---
 
@@ -38,16 +56,6 @@ kb move E-001-T-003 done
 ```
 
 That's the core loop. Read the rest of this file for the full reference.
-
----
-
-## Install
-
-`kb` is already installed globally. Run `kb --version` to verify. If not available:
-
-```bash
-pipx install -e /path/to/kanban
-```
 
 ---
 
