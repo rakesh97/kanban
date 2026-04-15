@@ -3,11 +3,29 @@ requires = ["setuptools>=64"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "kanban"
-version = "0.1.0"
-description = "Git-based project management for AI agents and humans"
+name = "kb-kanban"
+version = "0.1.0b1"
+description = "Global project management CLI for AI agents and humans"
+readme = "README.md"
+license = "MIT"
 requires-python = ">=3.8"
 dependencies = ["textual>=1.0"]
+authors = [
+    {name = "rakesh97"},
+]
+keywords = ["kanban", "project-management", "ai-agents", "cli", "tickets"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Bug Tracking",
+]
+
+[project.urls]
+Homepage = "https://github.com/rakesh97/kanban"
+Repository = "https://github.com/rakesh97/kanban"
+Issues = "https://github.com/rakesh97/kanban/issues"
 
 [project.scripts]
 kb = "kb.cli:main"

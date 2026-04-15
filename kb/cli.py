@@ -647,7 +647,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Global project management for AI agents and humans",
     )
     parser.add_argument(
-        "--version", action="version", version="%(prog)s 0.1.0"
+        "--version", action="version", version="%(prog)s 0.1.0b1"
     )
     parser.add_argument(
         "--project", "-P",
