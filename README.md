@@ -283,6 +283,7 @@ kb board                          # all tickets
 kb board --epic E-001             # one epic
 kb board --type task              # tasks only
 kb board --assignee-type agent    # agent work only
+kb board --watch                  # stay on screen, redraw on resize and edits
 
 # Table list
 kb list                                    # all tickets
@@ -298,6 +299,7 @@ kb show E-001-T-003                        # full detail view
 
 # Interactive TUI
 kb tui                                     # launch terminal UI
+kb tui --view list                         # open on the list view
 kb -P my-project tui                       # TUI for specific project
 ```
 

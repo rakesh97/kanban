@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kb-kanban"
-version = "0.1.0b1"
+version = "0.1.0b2"
 description = "Global project management CLI for AI agents and humans"
 readme = "README.md"
 license = "MIT"

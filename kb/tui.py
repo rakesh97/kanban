@@ -426,10 +426,10 @@ class KanbanApp(App):
     }
     """
 
-    def __init__(self, project_slug: str = None):
+    def __init__(self, project_slug: str = None, initial_view: str = "board"):
         super().__init__()
         self._project_slug = project_slug
-        self._current_view = "board"
+        self._current_view = initial_view
         self._selected_ticket_id: str | None = None
         self._filter_type: str | None = None
         self._filter_cycle = [None, "epic", "task", "subtask"]
@@ -487,7 +487,15 @@ class KanbanApp(App):
         self.query_one("#snapshot-container").display = False
         self.query_one("#project-switcher").display = False
 
-        self._load_board()
+        self._open_initial_view()
+
+    def _open_initial_view(self) -> None:
+        if self._current_view == "list":
+            self.action_view_list()
+        elif self._current_view == "snapshot":
+            self.action_view_snapshot()
+        else:
+            self.action_view_board()
 
     # ── Data loading ──────────────────────────────────────────────────
 
@@ -777,9 +785,13 @@ def main():
 
     parser = argparse.ArgumentParser(prog="kbtui", description="kb TUI")
     parser.add_argument("--project", "-P", help="Project slug", metavar="SLUG")
+    parser.add_argument(
+        "--view", choices=["board", "list", "snapshot"], default="board",
+        help="View to open first (default: board)",
+    )
     args = parser.parse_args()
 
-    app = KanbanApp(project_slug=args.project)
+    app = KanbanApp(project_slug=args.project, initial_view=args.view)
     app.run()
 
 

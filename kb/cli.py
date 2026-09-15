@@ -4,11 +4,15 @@ import sys
 import os
 import json
 import argparse
+import shutil
+import signal
+import textwrap
+import time
 from datetime import datetime
 
 from . import store
 from .models import Ticket, Comment
-from .board import render_board
+from .board import render_board, terminal_width
 from .context import generate_context, generate_handoff_doc, generate_snapshot
 
 
@@ -154,21 +158,63 @@ def cmd_create(args):
         sys.exit(1)
 
 
+WATCH_POLL_SECONDS = 1.0
+WATCH_TICK_SECONDS = 0.2
+SHOW_MAX_WIDTH = 100
+
+
+def _board_text(args) -> str:
+    tickets = store.load_all_tickets(
+        type_filter=args.type,
+        epic_filter=args.epic,
+        assignee_type_filter=args.assignee_type,
+    )
+    config = store.load_config()
+    title = config.get("project_name", "")
+    if args.epic:
+        title += f" | Epic: {args.epic}"
+    return render_board(tickets, title)
+
+
 def cmd_board(args):
     try:
-        tickets = store.load_all_tickets(
-            type_filter=args.type,
-            epic_filter=args.epic,
-            assignee_type_filter=args.assignee_type,
-        )
-        config = store.load_config()
-        title = config.get("project_name", "")
-        if args.epic:
-            title += f" | Epic: {args.epic}"
-        print(render_board(tickets, title))
+        if args.watch:
+            _watch_board(args)
+        else:
+            print(_board_text(args))
     except FileNotFoundError as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
+
+
+def _watch_board(args):
+    resized = {"flag": False}
+
+    def on_resize(signum, frame):
+        resized["flag"] = True
+
+    if hasattr(signal, "SIGWINCH"):
+        signal.signal(signal.SIGWINCH, on_resize)
+
+    last_output = None
+    last_width = None
+    next_poll = 0.0
+    try:
+        while True:
+            now = time.monotonic()
+            width = terminal_width()
+            if resized["flag"] or width != last_width or now >= next_poll or last_output is None:
+                resized["flag"] = False
+                next_poll = now + WATCH_POLL_SECONDS
+                output = _board_text(args)
+                if output != last_output or width != last_width:
+                    sys.stdout.write("\x1b[2J\x1b[H" + output + "\n\n  watching - Ctrl-C to exit\n")
+                    sys.stdout.flush()
+                    last_output = output
+                    last_width = width
+            time.sleep(WATCH_TICK_SECONDS)
+    except KeyboardInterrupt:
+        print()
 
 
 def cmd_list(args):
@@ -215,13 +261,52 @@ def cmd_list(args):
         sys.exit(1)
 
 
+def _show_width() -> int:
+    return min(SHOW_MAX_WIDTH, max(40, shutil.get_terminal_size((80, 24)).columns))
+
+
+def _wrap_block(text: str, width: int) -> str:
+    out = []
+    in_fence = False
+    for line in text.split("\n"):
+        stripped = line.lstrip()
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            out.append(line)
+            continue
+        if in_fence or not stripped or line.startswith(("\t", "    ")) or len(line) <= width:
+            out.append(line)
+            continue
+        indent = line[: len(line) - len(stripped)]
+        marker = _list_marker(stripped)
+        out.append(textwrap.fill(
+            stripped,
+            width=width,
+            initial_indent=indent,
+            subsequent_indent=indent + " " * len(marker),
+            break_long_words=False,
+            break_on_hyphens=False,
+        ))
+    return "\n".join(out)
+
+
+def _list_marker(text: str) -> str:
+    for prefix in ("- [ ] ", "- [x] ", "- ", "* ", "+ "):
+        if text.startswith(prefix):
+            return prefix
+    head = text.split(" ", 1)[0]
+    if head[:-1].isdigit() and head.endswith((".", ")")):
+        return head + " "
+    return ""
+
+
 def cmd_show(args):
     try:
         ticket = store.load_ticket(args.id)
-        width = 62
+        width = _show_width()
 
         print("=" * width)
-        print(f" {ticket.id}: {ticket.title}")
+        print(_wrap_block(f" {ticket.id}: {ticket.title}", width))
         print("=" * width)
 
         assignee = "unassigned"
@@ -237,11 +322,11 @@ def cmd_show(args):
         if ticket.parent:
             print(f" Parent:   {ticket.parent}")
         if ticket.labels:
-            print(f" Labels:   {', '.join(ticket.labels)}")
+            print(_wrap_block(f" Labels:   {', '.join(ticket.labels)}", width))
         if ticket.depends_on:
-            print(f" Depends:  {', '.join(ticket.depends_on)}")
+            print(_wrap_block(f" Depends:  {', '.join(ticket.depends_on)}", width))
         if ticket.files:
-            print(f" Files:    {', '.join(ticket.files)}")
+            print(_wrap_block(f" Files:    {', '.join(ticket.files)}", width))
         if ticket.source:
             print(f" Source:   {ticket.source}")
         print(f" Created:  {ticket.created}")
@@ -251,14 +336,14 @@ def cmd_show(args):
 
         if ticket.description and ticket.description != "_No description._":
             print("\n## Description\n")
-            print(ticket.description)
+            print(_wrap_block(ticket.description, width))
 
         if (
             ticket.acceptance_criteria
             and ticket.acceptance_criteria != "_None specified._"
         ):
             print("\n## Acceptance Criteria\n")
-            print(ticket.acceptance_criteria)
+            print(_wrap_block(ticket.acceptance_criteria, width))
 
         if (
             ticket.type == "epic"
@@ -266,15 +351,14 @@ def cmd_show(args):
             and ticket.decisions != "_No decisions yet._"
         ):
             print("\n## Decisions\n")
-            print(ticket.decisions)
+            print(_wrap_block(ticket.decisions, width))
 
         if ticket.comments:
             print("\n" + "-" * width)
             print(f"\n## Comments ({len(ticket.comments)})\n")
             for c in ticket.comments:
                 print(f"[{c.author_type}] {c.author} - {c.timestamp}")
-                for line in c.body.split("\n"):
-                    print(f"  {line}")
+                print(_wrap_block("\n".join(f"  {line}" for line in c.body.split("\n")), width))
                 print()
 
         print("=" * width)
@@ -634,7 +718,7 @@ def cmd_tui(args):
     project = None
     if hasattr(args, "project") and args.project:
         project = args.project
-    app = KanbanApp(project_slug=project)
+    app = KanbanApp(project_slug=project, initial_view=args.view)
     app.run()
 
 
@@ -701,6 +785,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--type", choices=["epic", "task", "subtask"])
     p.add_argument(
         "--assignee-type", choices=["agent", "human"], help="Filter by type"
+    )
+    p.add_argument(
+        "--watch", "-w", action="store_true",
+        help="Keep the board on screen; redraw on resize and ticket changes",
     )
     p.set_defaults(func=cmd_board)
 
@@ -811,6 +899,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     # ── tui
     p = sub.add_parser("tui", help="Launch interactive terminal UI")
+    p.add_argument(
+        "--view", choices=["board", "list", "snapshot"], default="board",
+        help="View to open first (default: board)",
+    )
     p.set_defaults(func=cmd_tui)
 
     return parser
