@@ -10,7 +10,7 @@ import textwrap
 import time
 from datetime import datetime
 
-from . import store
+from . import __version__, store
 from .models import Ticket, Comment
 from .board import render_board, terminal_width
 from .context import generate_context, generate_handoff_doc, generate_snapshot
@@ -731,7 +731,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Global project management for AI agents and humans",
     )
     parser.add_argument(
-        "--version", action="version", version="%(prog)s 0.1.0b1"
+        "--version", action="version", version=f"%(prog)s {__version__}"
     )
     parser.add_argument(
         "--project", "-P",
