@@ -36,6 +36,8 @@ STATUS_COLORS = {
     "in-progress": "yellow",
     "done": "green",
 }
+NARROW_TERMINAL_WIDTH = 120
+
 PRIORITY_COLORS = {
     "critical": "red bold",
     "high": "dark_orange",
@@ -131,6 +133,70 @@ def _build_hierarchy(tickets: list[Ticket]) -> list[dict]:
 # ── Ticket detail markdown ────────────────────────────────────────────
 
 
+def _normalize_tables(text: str) -> str:
+    """Turn runs of pipe-delimited lines into GFM tables so Markdown renders them as tables."""
+    out: list[str] = []
+    run_raw: list[str] = []
+    run_cells: list[list[str]] = []
+
+    def flush() -> None:
+        if len(run_cells) >= 2:
+            width = max(len(r) for r in run_cells)
+            rows = [r + [""] * (width - len(r)) for r in run_cells]
+            out.append("| " + " | ".join(rows[0]) + " |")
+            out.append("|" + "|".join(" --- " for _ in range(width)) + "|")
+            for r in rows[1:]:
+                out.append("| " + " | ".join(r) + " |")
+        else:
+            out.extend(run_raw)
+        run_raw.clear()
+        run_cells.clear()
+
+    in_fence = False
+    in_existing_table = False
+    for line in text.split("\n"):
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            flush()
+            in_fence = not in_fence
+            in_existing_table = False
+            out.append(line)
+            continue
+        cells = _table_cells(stripped)
+        if not in_fence and cells is not None:
+            if in_existing_table:
+                out.append(line)
+            elif run_cells and _is_separator_row(cells):
+                out.extend(run_raw)
+                run_raw.clear()
+                run_cells.clear()
+                out.append(line)
+                in_existing_table = True
+            else:
+                run_raw.append(line)
+                run_cells.append(cells)
+            continue
+        in_existing_table = False
+        flush()
+        out.append(line)
+    flush()
+    return "\n".join(out)
+
+
+def _table_cells(line: str) -> "list[str] | None":
+    if line.count("|") < 1 or line.startswith(("- ", "* ", "+ ", ">", "#")):
+        return None
+    if line.startswith("|") and line.endswith("|"):
+        line = line[1:-1]
+    elif " | " not in line:
+        return None
+    return [c.strip() for c in line.split("|")]
+
+
+def _is_separator_row(cells: "list[str]") -> bool:
+    return all(c and set(c) <= set("-: ") for c in cells)
+
+
 def _ticket_detail_md(ticket: Ticket) -> str:
     lines = []
     lines.append(f"# {ticket.id}: {ticket.title}")
@@ -158,19 +224,19 @@ def _ticket_detail_md(ticket: Ticket) -> str:
     if ticket.description and ticket.description != "_No description._":
         lines.append("## Description")
         lines.append("")
-        lines.append(ticket.description)
+        lines.append(_normalize_tables(ticket.description))
         lines.append("")
 
     if ticket.acceptance_criteria and ticket.acceptance_criteria != "_None specified._":
         lines.append("## Acceptance Criteria")
         lines.append("")
-        lines.append(ticket.acceptance_criteria)
+        lines.append(_normalize_tables(ticket.acceptance_criteria))
         lines.append("")
 
     if ticket.type == "epic" and ticket.decisions and ticket.decisions != "_No decisions yet._":
         lines.append("## Decisions")
         lines.append("")
-        lines.append(ticket.decisions)
+        lines.append(_normalize_tables(ticket.decisions))
         lines.append("")
 
     if ticket.comments:
@@ -178,7 +244,10 @@ def _ticket_detail_md(ticket: Ticket) -> str:
         lines.append("")
         for c in ticket.comments:
             lines.append(f"**[{c.author_type}] {c.author}** — {c.timestamp}")
-            lines.append(f"> {c.body}")
+            lines.append("")
+            lines.append(_normalize_tables(c.body))
+            lines.append("")
+            lines.append("---")
             lines.append("")
 
     return "\n".join(lines)
@@ -376,6 +445,7 @@ class KanbanApp(App):
     /* ── Detail panel ───────────────────────── */
 
     #detail-panel {
+        width: 1fr;
         height: 1fr;
         border: solid $accent;
         display: none;
@@ -643,6 +713,7 @@ class KanbanApp(App):
             self.query_one("#detail-md", Markdown).update(md)
             panel = self.query_one("#detail-panel")
             panel.display = True
+            self._apply_detail_layout()
             self._update_status(f"Viewing {ticket_id} | c=comment  m=move  Escape=close")
         except FileNotFoundError:
             self._update_status(f"Ticket {ticket_id} not found")
@@ -650,7 +721,20 @@ class KanbanApp(App):
     def _hide_detail(self) -> None:
         self.query_one("#detail-panel").display = False
         self._selected_ticket_id = None
+        self._apply_detail_layout()
         self._update_status("")
+
+    def _apply_detail_layout(self) -> None:
+        """On narrow terminals the open detail panel takes the whole width."""
+        detail_open = self.query_one("#detail-panel").display
+        narrow = self.size.width < NARROW_TERMINAL_WIDTH
+        view_container = {"board": "#board-container", "list": "#list-container", "snapshot": "#snapshot-container"}
+        container = self.query_one(view_container[self._current_view])
+        container.display = not (detail_open and narrow)
+
+    def on_resize(self) -> None:
+        if self._selected_ticket_id:
+            self._apply_detail_layout()
 
     def _update_status(self, msg: str) -> None:
         filt = f" | filter: {self._filter_type}" if self._filter_type else ""
